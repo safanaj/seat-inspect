@@ -10,7 +10,7 @@
 # http://www.freedesktop.org/wiki/Software/systemd/multiseat/
 # http://www.freedesktop.org/wiki/Software/systemd/logind/
 
-import dbus
+from gi.repository import GLib, Gio
 import argparse
 import logging
 from collections import namedtuple
@@ -54,12 +54,14 @@ class Seat:
         self.path = path
 
         # Get the seat object from the login manager
-        self.dbus_obj = system_bus.get_object("org.freedesktop.login1", self.path)
+        self.dbus_obj = Gio.DBusProxy.new_sync(system_bus,
+                                               flags=Gio.DBusProxyFlags.NONE, info=None,
+                                               name="org.freedesktop.login1",
+                                               object_path=self.path,
+                                               interface_name="org.freedesktop.DBus.Properties")
         # Read the seat API properties of the object, using the D-Bus
         # properties API
-        self.dbus_props = self.dbus_obj.GetAll("org.freedesktop.login1.Seat",
-                                               dbus_interface="org.freedesktop.DBus.Properties")
-
+        self.dbus_props = self.dbus_obj.GetAll("(s)", "")
         # Pythonize the d-bus properties
 
         # The Sessions array is an array of all current sessions of this seat, each
@@ -142,11 +144,15 @@ class User:
         self.path = path
 
         # Get the seat object from the login manager
-        self.dbus_obj = system_bus.get_object("org.freedesktop.login1", self.path)
+        self.dbus_obj = Gio.DBusProxy.new_sync(system_bus,
+                                               flags=Gio.DBusProxyFlags.NONE, info=None,
+                                               name="org.freedesktop.login1",
+                                               object_path=self.path,
+                                               interface_name="org.freedesktop.DBus.Properties")
+
         # Read the user API properties of the object, using the D-Bus
         # properties API
-        self.dbus_props = self.dbus_obj.GetAll("org.freedesktop.login1.User",
-                                               dbus_interface="org.freedesktop.DBus.Properties")
+        self.dbus_props = self.dbus_obj.GetAll("(s)", "")
 
         # The UID and GID properties encode the Unix UID and primary GID of the
         # user.
@@ -275,11 +281,14 @@ class Session:
         self.path = path
 
         # Get the seat object from the login manager
-        self.dbus_obj = system_bus.get_object("org.freedesktop.login1", self.path)
+        self.dbus_obj = Gio.DBusProxy.new_sync(system_bus,
+                                               flags=Gio.DBusProxyFlags.NONE, info=None,
+                                               name="org.freedesktop.login1",
+                                               object_path=self.path,
+                                               interface_name="org.freedesktop.DBus.Properties")
         # Read the user API properties of the object, using the D-Bus
         # properties API
-        self.dbus_props = self.dbus_obj.GetAll("org.freedesktop.login1.Session",
-                                               dbus_interface="org.freedesktop.DBus.Properties")
+        self.dbus_props = self.dbus_obj.GetAll("(s)", "")
 
 
         # Timestamp encodes the usec timestamp since the
@@ -413,19 +422,23 @@ if __name__ == "__main__":
 
     try:
         # Get a private connection to the D-Bus daemon
-        system_bus = dbus.bus.BusConnection(dbus.bus.BusConnection.TYPE_SYSTEM)
-    except dbus.exceptions.DBusException as e:
-        if e.get_dbus_name() == "org.freedesktop.DBus.Error.FileNotFound":
-            log.warn("Cannot contact the system D-Bus server, is it running? The error is: %s", e.get_dbus_message())
+        system_bus = Gio.bus_get_sync(Gio.BusType.SYSTEM)
+    except GLib.Error as e:
+        if e.matches(GLib.quark_from_string("g-dbus-error-quark"), Gio.DBusError.FILE_NOT_FOUND):
+            log.warn("Cannot contact the system D-Bus server, is it running? The error is: %s", e.message)
         sys.exit(1)
 
     # Get a proxy to the system login object
-    login_obj = system_bus.get_object("org.freedesktop.login1", "/org/freedesktop/login1")
+    login_iface = Gio.DBusProxy.new_sync(system_bus,
+                                         flags=Gio.DBusProxyFlags.NONE, info=None,
+                                         name="org.freedesktop.login1",
+                                         object_path="/org/freedesktop/login1",
+                                         interface_name="org.freedesktop.login1.Manager")
 
     # Talk to it using the login Manager API
-    login_iface = dbus.Interface(login_obj, dbus_interface="org.freedesktop.login1.Manager")
     # Also use the dbus Properties API to get a list of its properties
-    login_props = login_obj.GetAll("org.freedesktop.login1.Manager", dbus_interface="org.freedesktop.DBus.Properties")
+    login_props = login_iface.call_sync("org.freedesktop.DBus.Properties.GetAll",
+                                        GLib.Variant('(s)', ("",)) , 0, -1).unpack()[0]
 
     # List available seats
     log.info("Available seats:")
@@ -448,16 +461,16 @@ if __name__ == "__main__":
         sessions[session.path] = session
         session.log_summary()
 
-    cur_session = sessions.get(login_iface.GetSessionByPID(os.getpid()), None)
+    cur_session = sessions.get(login_iface.GetSessionByPID("(u)", os.getpid()), None)
     log.info("Current session: %s", cur_session.id if cur_session else "unknown")
     try:
-        cur_user = users.get(login_iface.GetUserByPID(os.getpid()), None)
+        cur_user = users.get(login_iface.GetUserByPID("(u)", os.getpid()), None)
         log.info("Current user: %s", cur_user.name if cur_user else "unknown")
-    except dbus.exceptions.DBusException as e:
-        if e.get_dbus_name() == "org.freedesktop.DBus.Error.AccessDenied":
+    except GLib.Error as e:
+        if e.matches(GLib.quark_from_string("g-dbus-error-quark"), Gio.DBusError.ACCESS_DENIED):
             log.info("GetUserByPID not supported, you are probably running logind older than v208, no big deal.")
         else:
-            log.warn("GetUserByPID failed: %s (%s)", e.get_dbus_name(), e.get_dbus_message())
+            log.warn("GetUserByPID failed: %s", e.message)
 
     log.info("System capabilities:")
     descs = {
